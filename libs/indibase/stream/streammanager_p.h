@@ -134,6 +134,9 @@ class StreamManagerPrivate
         // Stop recording. Force stop even in abnormal state if needed.
         bool stopRecording(bool force = false);
 
+        // Write a metadata summary text file alongside the recording
+        void writeRecordingMetadata();
+
         /**
          * @brief uploadStream Upload frame to client using the selected encoder
          * @param buffer pointer to frame image buffer
@@ -230,6 +233,7 @@ class StreamManagerPrivate
         RecorderInterface *recorder = nullptr;
         bool direct_record = false;
         std::string recordfiledir, recordfilename; /* in case we should move it */
+        std::string m_currentRecordFilePath;       /* full path of the active recording */
 
         // Encoders
         EncoderManager encoderManager;
