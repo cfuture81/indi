@@ -227,15 +227,21 @@ bool WandererCover::Handshake()
 
 void WandererCover::updateCoverStatus(char* res)
 {
-    if (strcmp(res, "0") == 0 && isCoverOpen == true)
+    if (strcmp(res, "0") == 0)
     {
-        isCoverOpen = false;
-        setParkCapStatusAsClosed();
+        if (isCoverOpen || ParkCapSP.getState() == IPS_IDLE)
+        {
+            isCoverOpen = false;
+            setParkCapStatusAsClosed();
+        }
     }
-    else if (strcmp(res, "1") == 0 && isCoverOpen == false)
+    else if (strcmp(res, "1") == 0)
     {
-        isCoverOpen = true;
-        setParkCapStatusAsOpen();
+        if (!isCoverOpen || ParkCapSP.getState() == IPS_IDLE)
+        {
+            isCoverOpen = true;
+            setParkCapStatusAsOpen();
+        }
     }
     else if (strcmp(res, "255") == 0)
     {
