@@ -148,6 +148,21 @@ bool TitanTCS::updateProperties()
         TrackModeSP[TRACK_SIDEREAL].setState(ISS_ON);
         TrackState = SCOPE_TRACKING;
         //
+        // Load saved park position, or fall back to sensible defaults (pole).
+        if(InitPark())
+        {
+            LOG_INFO("Park data loaded from file.");
+        }
+        else
+        {
+            // No saved park data — default to the celestial pole, which is
+            // where this mount physically parks (telescope points north).
+            SetAxis1ParkDefault(0.0);
+            SetAxis2ParkDefault(LocationNP[LOCATION_LATITUDE].getValue() >= 0 ? 90.0 : -90.0);
+            SetAxis1Park(0.0);
+            SetAxis2Park(LocationNP[LOCATION_LATITUDE].getValue() >= 0 ? 90.0 : -90.0);
+        }
+        //
         GetMountParams();
     }
     else
@@ -1549,19 +1564,39 @@ bool TitanTCS::SetTrackEnabled(bool enabled)
 // -----------------------------------------------------------------------------
 bool TitanTCS::SetParkPosition(double Axis1Value, double Axis2Value)
 {
-    INDI_UNUSED(Axis1Value);
-    INDI_UNUSED(Axis2Value);
-
+    // Park data type is PARK_HA_DEC, so Axis1 = Hour Angle, Axis2 = DEC.
+    // The base class stores these values; the driver just accepts them.
+    SetAxis1Park(Axis1Value);
+    SetAxis2Park(Axis2Value);
+    LOGF_INFO("Park position set to HA %.4f h, DEC %.4f deg", Axis1Value, Axis2Value);
     return true;
 }
 
+// -----------------------------------------------------------------------------
+// Save the CURRENT mount position as the park position.
+// Park data type is PARK_HA_DEC → Axis1 = Hour Angle, Axis2 = DEC.
 bool TitanTCS::SetCurrentPark()
 {
+    double lst = get_local_sidereal_time(LocationNP[LOCATION_LONGITUDE].getValue());
+    double ha  = get_local_hour_angle(lst, info.ra);
+
+    SetAxis1Park(ha);
+    SetAxis2Park(info.dec);
+
+    LOGF_INFO("Current park position saved: HA %.4f h, DEC %.4f deg", ha, info.dec);
     return true;
 }
 // -----------------------------------------------------------------------------
+// Default park position: the celestial pole (this mount physically parks
+// pointing north). HA is arbitrary at the pole, so use 0.
 bool TitanTCS::SetDefaultPark()
 {
+    double poleDec = (LocationNP[LOCATION_LATITUDE].getValue() >= 0) ? 90.0 : -90.0;
+
+    SetAxis1Park(0.0);
+    SetAxis2Park(poleDec);
+
+    LOGF_INFO("Default park position set: HA 0.0 h, DEC %.1f deg (pole)", poleDec);
     return true;
 }
 
