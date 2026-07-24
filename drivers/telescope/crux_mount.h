@@ -47,6 +47,8 @@ class TitanTCS : public INDI::Telescope, public INDI::GuiderInterface
 
     private:
         int m_Connect;
+        double m_LastRA {0};
+        double m_LastDEC {0};
 
     public:
         virtual const char *getDefaultName() override;
@@ -124,6 +126,7 @@ class TitanTCS : public INDI::Telescope, public INDI::GuiderInterface
         bool CommandResponseChar(const char* pCommand, const char* pResponse, char* pReturn);
 
         bool GetMountParams(bool bAll = false);
+        bool GetMountParamsLight();
 
         bool GetParamStr(const char* pInStr, char* pOutStr, int len, const char* pResponse, char delimeter);
         bool GetParamNumber(const char* pInStr, char* pOutStr, int len, const char* pResponse, char delimeter, double *pDouble,

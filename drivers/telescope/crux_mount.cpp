@@ -594,7 +594,19 @@ bool TitanTCS::ReadScopeStatus()
 {
     LOGF_DEBUG("ReadScopeStatus(s %d)", TrackState);
 
-    GetMountParams();
+    // During slewing/parking, use lightweight individual queries to avoid
+    // overloading the firmware's command processor. The composite \GE command
+    // requires significant parsing time which can interfere with step
+    // generation and cause the RA motor to stall.
+    // When tracking/idle, use the full composite query for efficiency.
+    if(TrackState == SCOPE_SLEWING || TrackState == SCOPE_PARKING)
+    {
+        GetMountParamsLight();
+    }
+    else
+    {
+        GetMountParams();
+    }
 
     return true;
 }
@@ -978,6 +990,60 @@ void TitanTCS::guideTimeoutHelperNS(void * p)
 void TitanTCS::guideTimeoutHelperWE(void * p)
 {
     static_cast<TitanTCS *>(p)->guideTimeoutWE();
+}
+
+bool TitanTCS::GetMountParamsLight()
+{
+    // Lightweight polling during slewing — individual short LX200 queries only.
+    // This avoids the composite \GE command which can overload the firmware's
+    // command processor and cause RA motor stalls during high-speed slewing.
+
+    double ra = 0, dec = 0;
+
+    // Get RA via standard LX200 :GR# command
+    if(!CommandResponseHour("#:GR#", "", '#', &ra))
+    {
+        LOG_ERROR("GetMountParamsLight: failed to read RA");
+        return false;
+    }
+
+    // Get DEC via standard LX200 :GD# command
+    if(!CommandResponseHour("#:GD#", "", '#', &dec))
+    {
+        LOG_ERROR("GetMountParamsLight: failed to read DEC");
+        return false;
+    }
+
+    LOGF_DEBUG("RA %g, DEC %g", ra, dec);
+    NewRaDec(ra, dec);
+
+    // Detect slew/park completion: compare to previous position.
+    // When position stops changing significantly, mount has arrived.
+    // Then do one full poll to transition state properly.
+    double dRA = fabs(ra - m_LastRA);
+    double dDEC = fabs(dec - m_LastDEC);
+    if(dRA > 12.0)
+        dRA = 24.0 - dRA;
+
+    if(m_LastRA != 0 && m_LastDEC != 0)
+    {
+        // If position changed less than ~30 arcsec/s in both axes, mount has stopped
+        // (sidereal rate is ~0.004 h/s ≈ 0.07 arcmin/s which is well below this threshold)
+        if(dRA < 0.01 && dDEC < 0.01)
+        {
+            // Position stable — do full status query to get tracking state
+            LOG_DEBUG("Slew appears complete, querying full status");
+            GetMountParams();
+            m_LastRA = 0;
+            m_LastDEC = 0;
+            return true;
+        }
+    }
+
+    m_LastRA = ra;
+    m_LastDEC = dec;
+
+    return true;
 }
 
 bool TitanTCS::GetMountParams(bool bAll)
