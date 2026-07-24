@@ -47,8 +47,11 @@ class TitanTCS : public INDI::Telescope, public INDI::GuiderInterface
 
     private:
         int m_Connect;
+        // Lightweight-poll slew/park completion detection state
         double m_LastRA {0};
         double m_LastDEC {0};
+        bool   m_HaveLastPos {false};
+        int    m_StableCount {0};
 
     public:
         virtual const char *getDefaultName() override;

@@ -570,6 +570,9 @@ bool TitanTCS::Goto(double ra, double dec)
     }
 
     TrackState = SCOPE_SLEWING;
+    // Reset lightweight-poll completion detection for the new slew
+    m_HaveLastPos = false;
+    m_StableCount = 0;
 
     LOG_INFO("Slewing ...");
     return true;
@@ -1017,31 +1020,48 @@ bool TitanTCS::GetMountParamsLight()
     LOGF_DEBUG("RA %g, DEC %g", ra, dec);
     NewRaDec(ra, dec);
 
-    // Detect slew/park completion: compare to previous position.
-    // When position stops changing significantly, mount has arrived.
-    // Then do one full poll to transition state properly.
-    double dRA = fabs(ra - m_LastRA);
-    double dDEC = fabs(dec - m_LastDEC);
-    if(dRA > 12.0)
-        dRA = 24.0 - dRA;
-
-    if(m_LastRA != 0 && m_LastDEC != 0)
+    // Detect slew/park completion by watching for the position to stop changing.
+    // We only fire the (heavy) composite status query once the mount has clearly
+    // STOPPED — at that point the motors are idle and the composite command is
+    // safe (it only causes stalls during active high-speed slewing).
+    //
+    // To avoid firing during a slow deceleration phase (where a single sample
+    // might dip below threshold while still moving), we require TWO consecutive
+    // stable samples before declaring the mount stopped.
+    if(m_HaveLastPos)
     {
-        // If position changed less than ~30 arcsec/s in both axes, mount has stopped
-        // (sidereal rate is ~0.004 h/s ≈ 0.07 arcmin/s which is well below this threshold)
-        if(dRA < 0.01 && dDEC < 0.01)
+        double dRA = fabs(ra - m_LastRA);
+        double dDEC = fabs(dec - m_LastDEC);
+        // Handle RA wraparound across 0h/24h (e.g. crossing the pole)
+        if(dRA > 12.0)
+            dRA = 24.0 - dRA;
+
+        // Threshold ~0.01h (9 arcsec/poll) — well above sidereal drift (~0.07
+        // arcmin/poll) but far below any real slew speed.
+        bool stable = (dRA < 0.01 && dDEC < 0.01);
+
+        if(stable)
         {
-            // Position stable — do full status query to get tracking state
-            LOG_DEBUG("Slew appears complete, querying full status");
-            GetMountParams();
-            m_LastRA = 0;
-            m_LastDEC = 0;
-            return true;
+            m_StableCount++;
+            if(m_StableCount >= 2)
+            {
+                // Mount has stopped moving — safe to query full status now.
+                LOG_DEBUG("Slew/park appears complete, querying full status");
+                m_HaveLastPos = false;
+                m_StableCount = 0;
+                GetMountParams();
+                return true;
+            }
+        }
+        else
+        {
+            m_StableCount = 0;
         }
     }
 
     m_LastRA = ra;
     m_LastDEC = dec;
+    m_HaveLastPos = true;
 
     return true;
 }
@@ -1473,6 +1493,9 @@ bool TitanTCS::Park()
     {
         ParkSP.setState(IPS_BUSY);
         TrackState = SCOPE_PARKING;
+        // Reset lightweight-poll completion detection for the park slew
+        m_HaveLastPos = false;
+        m_StableCount = 0;
         return true;
     }
     return false;
