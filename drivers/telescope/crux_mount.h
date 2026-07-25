@@ -52,6 +52,9 @@ class TitanTCS : public INDI::Telescope, public INDI::GuiderInterface
         double m_LastDEC {0};
         bool   m_HaveLastPos {false};
         int    m_StableCount {0};
+        // Set when Park() slews to the park position; triggers the firmware
+        // park-lock (':hP8#') once the mount arrives.
+        bool   m_ParkingRequested {false};
 
     public:
         virtual const char *getDefaultName() override;

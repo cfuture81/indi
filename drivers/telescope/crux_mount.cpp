@@ -598,6 +598,9 @@ bool TitanTCS::Goto(double ra, double dec)
 ***************************************************************************************/
 bool TitanTCS::Abort()
 {
+    // Cancel any pending park-lock so an aborted park slew does not lock later.
+    m_ParkingRequested = false;
+
     if(TrackState == SCOPE_PARKING)
         UnPark();
 
@@ -1060,10 +1063,20 @@ bool TitanTCS::GetMountParamsLight()
             m_StableCount++;
             if(m_StableCount >= 2)
             {
-                // Mount has stopped moving — safe to query full status now.
-                LOG_DEBUG("Slew/park appears complete, querying full status");
+                // Mount has stopped moving — safe to send commands now.
                 m_HaveLastPos = false;
                 m_StableCount = 0;
+
+                // If this slew was a park request, we have now reached the park
+                // position — lock the mount in place with the firmware park cmd.
+                if(m_ParkingRequested)
+                {
+                    LOG_INFO("Reached park position, locking mount");
+                    SendCommand("#:hP8#");
+                    m_ParkingRequested = false;
+                }
+
+                LOG_DEBUG("Slew/park appears complete, querying full status");
                 GetMountParams();
                 return true;
             }
@@ -1500,25 +1513,45 @@ bool TitanTCS::MoveWE(INDI_DIR_WE dir, TelescopeMotionCommand command)
     return SendCommand(szCommand);
 }
 // -----------------------------------------------------------------------------
+// Park: "move to saved point, then park".
+// The firmware ':hP8#' command parks the mount IN PLACE (wherever it currently
+// points). To replicate the ASCOM "Move to saved point, Park" behaviour, we
+// slew to the stored park position first (PARK_HA_DEC → Axis1 = HA, Axis2 = DEC)
+// using the normal Goto, then lock the mount with ':hP8#' once it arrives.
+// Uses only proven commands. Fails safe: if the slew cannot start, park aborts
+// and the mount is left tracking.
 bool TitanTCS::Park()
 {
     LOG_INFO("Parking ...");
 
-    if(SendCommand(":hP8#"))
+    // Compute the target RA from the stored park position (HA/DEC).
+    double lst     = get_local_sidereal_time(LocationNP[LOCATION_LONGITUDE].getValue());
+    double parkRA  = range24(lst - GetAxis1Park());
+    double parkDEC = GetAxis2Park();
+
+    LOGF_INFO("Slewing to park position RA %.4f h, DEC %.4f deg", parkRA, parkDEC);
+
+    // Slew to the park position using the normal Goto path (lightweight polling).
+    if(!Goto(parkRA, parkDEC))
     {
-        ParkSP.setState(IPS_BUSY);
-        TrackState = SCOPE_PARKING;
-        // Reset lightweight-poll completion detection for the park slew
-        m_HaveLastPos = false;
-        m_StableCount = 0;
-        return true;
+        LOG_ERROR("Park: failed to start slew to park position");
+        return false;
     }
-    return false;
+
+    // Goto() set SCOPE_SLEWING and reset the completion detector. Flag this as a
+    // park so GetMountParamsLight() locks the mount (':hP8#') once it arrives.
+    m_ParkingRequested = true;
+    TrackState = SCOPE_PARKING;
+    ParkSP.setState(IPS_BUSY);
+    return true;
 }
 // -----------------------------------------------------------------------------
 bool TitanTCS::UnPark()
 {
     LOG_INFO("Unparking ...");
+
+    // Cancel any pending park-lock (in case unpark is issued mid-park-slew).
+    m_ParkingRequested = false;
 
     if(SendCommand(":hP0#"))
     {
