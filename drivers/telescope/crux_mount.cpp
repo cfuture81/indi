@@ -31,6 +31,10 @@
 #define HANDSHAKE_NAME  "TiTaN TCS"
 #define MIN_FW_VERSION  "3.1.0"
 #define MAX_CMD_LEN     256
+// Declination (deg) beyond which the hour angle of a park position is treated as
+// ambiguous. Within this region of the pole the same sky position is reachable
+// from either side of the pier, so a stored HA can flip the mount mechanically.
+#define POLE_PARK_DEC_LIMIT 85.0
 
 static std::unique_ptr<TitanTCS> titanTCS(new TitanTCS());
 
@@ -1526,8 +1530,20 @@ bool TitanTCS::Park()
 
     // Compute the target RA from the stored park position (HA/DEC).
     double lst     = get_local_sidereal_time(LocationNP[LOCATION_LONGITUDE].getValue());
-    double parkRA  = range24(lst - GetAxis1Park());
+    double parkHA  = GetAxis1Park();
     double parkDEC = GetAxis2Park();
+
+    // Guard against an ambiguous near-pole hour angle (see SetCurrentPark).
+    // A park file written before this guard existed may still contain one.
+    if(fabs(parkDEC) > POLE_PARK_DEC_LIMIT && fabs(parkHA) > 0.01)
+    {
+        LOGF_WARN("Stored park HA %.4f is ambiguous this close to the pole (DEC %.4f); "
+                  "using HA 0 (home orientation) to avoid parking on the wrong side "
+                  "of the pier.", parkHA, parkDEC);
+        parkHA = 0.0;
+    }
+
+    double parkRA = range24(lst - parkHA);
 
     LOGF_INFO("Slewing to park position RA %.4f h, DEC %.4f deg", parkRA, parkDEC);
 
@@ -1612,6 +1628,20 @@ bool TitanTCS::SetCurrentPark()
 {
     double lst = get_local_sidereal_time(LocationNP[LOCATION_LONGITUDE].getValue());
     double ha  = get_local_hour_angle(lst, info.ra);
+
+    // Near the pole the RA/HA coordinate is ill-conditioned: a large hour angle
+    // barely changes the sky position but corresponds to a completely different
+    // MECHANICAL orientation. Replaying such an HA on a later park can send the
+    // mount to the opposite side of the pier (observed: saddle face down).
+    // This mount homes at the pole, where HA 0 is the counterweight-down home
+    // orientation, so clamp HA to 0 in that region.
+    if(fabs(info.dec) > POLE_PARK_DEC_LIMIT)
+    {
+        LOGF_WARN("Park position is near the pole (DEC %.4f). Hour angle is ambiguous "
+                  "there, so storing HA 0 (home orientation) instead of HA %.4f to avoid "
+                  "parking on the wrong side of the pier.", info.dec, ha);
+        ha = 0.0;
+    }
 
     SetAxis1Park(ha);
     SetAxis2Park(info.dec);
