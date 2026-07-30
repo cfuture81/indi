@@ -130,12 +130,12 @@ bool TitanTCS::initProperties()
     IUFillTextVector(&MountInfoTP, MountInfoT, 2, getDeviceName(), "MOUNT_INFOS", "Mount Info", MAIN_CONTROL_TAB,
                      IP_RO, 60, IPS_IDLE);
 
-    // Park mode. Default to letting the mount firmware handle parking, which is
-    // the long-standing driver behaviour and cannot conflict with whatever park
-    // mode is configured on the TitanTCS controller.
-    ParkModeSP[PARK_MODE_FIRMWARE].fill("PARK_MODE_FIRMWARE", "Mount firmware", ISS_ON);
-    ParkModeSP[PARK_MODE_INDI_POSITION].fill("PARK_MODE_INDI", "Slew to INDI position", ISS_OFF);
-    ParkModeSP.fill(getDeviceName(), "PARK_MODE", "Park Mode", OPTIONS_TAB, IP_RW, ISR_1OFMANY, 60, IPS_IDLE);
+    // Park mode, mirroring the two options in the TitanTCS ASCOM application.
+    // Default to parking at the saved position: that is what Ekos and the INDI
+    // park-position fields imply, and ':hP8#' alone only ever locks in place.
+    ParkModeSP[PARK_MODE_AT_CURRENT].fill("PARK_MODE_AT_CURRENT", "At current position", ISS_OFF);
+    ParkModeSP[PARK_MODE_AT_SAVED].fill("PARK_MODE_AT_SAVED", "At saved position", ISS_ON);
+    ParkModeSP.fill(getDeviceName(), "PARK_MODE", "Park", OPTIONS_TAB, IP_RW, ISR_1OFMANY, 60, IPS_IDLE);
     ParkModeSP.load();
 
     TrackState = SCOPE_IDLE;
@@ -219,10 +219,10 @@ bool TitanTCS::ISNewSwitch(const char *dev, const char *name, ISState *states, c
             ParkModeSP.apply();
             saveConfig(true, ParkModeSP.getName());
 
-            if(ParkModeSP.findOnSwitchIndex() == PARK_MODE_FIRMWARE)
-                LOG_INFO("Park mode: mount firmware decides where to park.");
+            if(ParkModeSP.findOnSwitchIndex() == PARK_MODE_AT_CURRENT)
+                LOG_INFO("Park mode: lock the mount at its current position.");
             else
-                LOG_INFO("Park mode: driver slews to the INDI park position, then locks.");
+                LOG_INFO("Park mode: slew to the saved park position, then lock.");
 
             return true;
         }
@@ -1541,36 +1541,32 @@ bool TitanTCS::MoveWE(INDI_DIR_WE dir, TelescopeMotionCommand command)
     return SendCommand(szCommand);
 }
 // -----------------------------------------------------------------------------
-// Park. Two modes, selectable via the "Park Mode" property:
+// Park. Two modes, selectable via the "Park" property on the Options tab. These
+// mirror the two options in the TitanTCS ASCOM application.
 //
-//  PARK_MODE_FIRMWARE (default): just send ':hP8#' and let the mount firmware do
-//    whatever it is configured to do on the TitanTCS controller (park in place,
-//    or move to its own saved point and park). This is the long-standing driver
-//    behaviour. It cannot conflict with the firmware and never moves the mount
-//    twice, and the firmware knows the true MECHANICAL position, which INDI's
-//    sky coordinates cannot express.
-//
-//  PARK_MODE_INDI_POSITION: slew to the INDI park position (PARK_HA_DEC →
+//  PARK_MODE_AT_SAVED (default): slew to the stored park position (PARK_HA_DEC →
 //    Axis1 = HA, Axis2 = DEC) using the normal Goto, then lock with ':hP8#' on
-//    arrival. For firmware configured to park in place, when you want Ekos to
-//    decide the park position. Note this cannot control which side of the pier
-//    the mount approaches from — see the near-pole guard below.
+//    arrival. This is what Ekos and the INDI park-position fields imply, and it
+//    is the only way to reach a saved position: the serial ':hP8#' command always
+//    parks the mount in place, regardless of the park mode configured on the
+//    controller (confirmed on hardware).
+//
+//  PARK_MODE_AT_CURRENT: send ':hP8#' only, locking the mount wherever it points.
 bool TitanTCS::Park()
 {
     LOG_INFO("Parking ...");
 
-    if(ParkModeSP.findOnSwitchIndex() == PARK_MODE_FIRMWARE)
+    if(ParkModeSP.findOnSwitchIndex() == PARK_MODE_AT_CURRENT)
     {
-        // Let the firmware park however it is configured.
+        // Lock in place, no slew.
         if(!SendCommand(":hP8#"))
             return false;
 
         ParkSP.setState(IPS_BUSY);
         TrackState = SCOPE_PARKING;
-        // The firmware may or may not slew; the lightweight poll detects arrival.
         m_HaveLastPos = false;
         m_StableCount = 0;
-        m_ParkingRequested = false;   // firmware handles the lock itself
+        m_ParkingRequested = false;   // nothing to lock on arrival, already sent
         return true;
     }
 

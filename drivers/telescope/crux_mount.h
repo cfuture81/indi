@@ -78,14 +78,14 @@ class TitanTCS : public INDI::Telescope, public INDI::GuiderInterface
         int GuideNSTID { -1 };
         int GuideWETID { -1 };
 
-        // How Park() should behave. The TitanTCS firmware itself has two park
-        // modes (configured on the controller): park where it stands, or move to
-        // a saved point first. Let the user pick which one the driver assumes so
-        // we never fight the firmware or move the mount twice.
+        // How Park() should behave. Mirrors the two options the TitanTCS ASCOM
+        // application offers. The serial ':hP8#' command always parks the mount
+        // in place, so reaching a saved position requires the driver to slew
+        // there first.
         enum
         {
-            PARK_MODE_FIRMWARE = 0,   // just send ':hP8#', let the firmware decide
-            PARK_MODE_INDI_POSITION   // slew to the INDI park position, then lock
+            PARK_MODE_AT_CURRENT = 0,  // ':hP8#' only — lock wherever it points
+            PARK_MODE_AT_SAVED         // slew to the park position, then lock
         };
         INDI::PropertySwitch ParkModeSP {2};
 
