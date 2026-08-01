@@ -31,10 +31,6 @@
 #define HANDSHAKE_NAME  "TiTaN TCS"
 #define MIN_FW_VERSION  "3.1.0"
 #define MAX_CMD_LEN     256
-// Declination (deg) beyond which the hour angle of a park position is treated as
-// ambiguous. Within this region of the pole the same sky position is reachable
-// from either side of the pier, so a stored HA can flip the mount mechanically.
-#define POLE_PARK_DEC_LIMIT 85.0
 
 static std::unique_ptr<TitanTCS> titanTCS(new TitanTCS());
 
@@ -130,9 +126,9 @@ bool TitanTCS::initProperties()
     IUFillTextVector(&MountInfoTP, MountInfoT, 2, getDeviceName(), "MOUNT_INFOS", "Mount Info", MAIN_CONTROL_TAB,
                      IP_RO, 60, IPS_IDLE);
 
-    // Park mode, mirroring the two options in the TitanTCS ASCOM application.
-    // Default to parking at the saved position: that is what Ekos and the INDI
-    // park-position fields imply, and ':hP8#' alone only ever locks in place.
+    // Park mode, mirroring the two options in the TitanTCS ASCOM application:
+    // park at the saved point (':hP1#', default) or lock at the current
+    // position (':hP8#'). See Park() for details.
     ParkModeSP[PARK_MODE_AT_CURRENT].fill("PARK_MODE_AT_CURRENT", "At current position", ISS_OFF);
     ParkModeSP[PARK_MODE_AT_SAVED].fill("PARK_MODE_AT_SAVED", "At saved position", ISS_ON);
     ParkModeSP.fill(getDeviceName(), "PARK_MODE", "Park", OPTIONS_TAB, IP_RW, ISR_1OFMANY, 60, IPS_IDLE);
@@ -626,9 +622,6 @@ bool TitanTCS::Goto(double ra, double dec)
 ***************************************************************************************/
 bool TitanTCS::Abort()
 {
-    // Cancel any pending park-lock so an aborted park slew does not lock later.
-    m_ParkingRequested = false;
-
     if(TrackState == SCOPE_PARKING)
         UnPark();
 
@@ -1091,19 +1084,9 @@ bool TitanTCS::GetMountParamsLight()
             m_StableCount++;
             if(m_StableCount >= 2)
             {
-                // Mount has stopped moving — safe to send commands now.
+                // Mount has stopped moving — safe to query full status now.
                 m_HaveLastPos = false;
                 m_StableCount = 0;
-
-                // If this slew was a park request, we have now reached the park
-                // position — lock the mount in place with the firmware park cmd.
-                if(m_ParkingRequested)
-                {
-                    LOG_INFO("Reached park position, locking mount");
-                    SendCommand("#:hP8#");
-                    m_ParkingRequested = false;
-                }
-
                 LOG_DEBUG("Slew/park appears complete, querying full status");
                 GetMountParams();
                 return true;
@@ -1541,75 +1524,39 @@ bool TitanTCS::MoveWE(INDI_DIR_WE dir, TelescopeMotionCommand command)
     return SendCommand(szCommand);
 }
 // -----------------------------------------------------------------------------
-// Park. Two modes, selectable via the "Park" property on the Options tab. These
-// mirror the two options in the TitanTCS ASCOM application.
+// Park. Two modes, selectable via the "Park" property on the Options tab, using
+// the mount's own firmware park commands (decoded from the TitanTCS ASCOM driver
+// serial trace):
 //
-//  PARK_MODE_AT_SAVED (default): slew to the stored park position (PARK_HA_DEC →
-//    Axis1 = HA, Axis2 = DEC) using the normal Goto, then lock with ':hP8#' on
-//    arrival. This is what Ekos and the INDI park-position fields imply, and it
-//    is the only way to reach a saved position: the serial ':hP8#' command always
-//    parks the mount in place, regardless of the park mode configured on the
-//    controller (confirmed on hardware).
+//  PARK_MODE_AT_SAVED (default): ':hP1#' — the firmware moves to the saved park
+//    point and parks. The park point is stored in the mount (see SetCurrentPark,
+//    ':hS#'). The firmware knows the true MECHANICAL position, so this reaches
+//    the correct home on the correct side of the pier every time — something the
+//    driver cannot compute from sky coordinates near the pole.
 //
-//  PARK_MODE_AT_CURRENT: send ':hP8#' only, locking the mount wherever it points.
+//  PARK_MODE_AT_CURRENT: ':hP8#' — park (lock) wherever the mount currently points.
 bool TitanTCS::Park()
 {
-    LOG_INFO("Parking ...");
+    bool atCurrent = (ParkModeSP.findOnSwitchIndex() == PARK_MODE_AT_CURRENT);
+    const char *cmd = atCurrent ? ":hP8#" : ":hP1#";
 
-    if(ParkModeSP.findOnSwitchIndex() == PARK_MODE_AT_CURRENT)
-    {
-        // Lock in place, no slew.
-        if(!SendCommand(":hP8#"))
-            return false;
+    LOGF_INFO("Parking (%s) ...", atCurrent ? "at current position" : "to saved park point");
 
-        ParkSP.setState(IPS_BUSY);
-        TrackState = SCOPE_PARKING;
-        m_HaveLastPos = false;
-        m_StableCount = 0;
-        m_ParkingRequested = false;   // nothing to lock on arrival, already sent
-        return true;
-    }
-
-    // Compute the target RA from the stored park position (HA/DEC).
-    double lst     = get_local_sidereal_time(LocationNP[LOCATION_LONGITUDE].getValue());
-    double parkHA  = GetAxis1Park();
-    double parkDEC = GetAxis2Park();
-
-    // Guard against an ambiguous near-pole hour angle (see SetCurrentPark).
-    // A park file written before this guard existed may still contain one.
-    if(fabs(parkDEC) > POLE_PARK_DEC_LIMIT && fabs(parkHA) > 0.01)
-    {
-        LOGF_WARN("Stored park HA %.4f is ambiguous this close to the pole (DEC %.4f); "
-                  "using HA 0 (home orientation) to avoid parking on the wrong side "
-                  "of the pier.", parkHA, parkDEC);
-        parkHA = 0.0;
-    }
-
-    double parkRA = range24(lst - parkHA);
-
-    LOGF_INFO("Slewing to park position RA %.4f h, DEC %.4f deg", parkRA, parkDEC);
-
-    // Slew to the park position using the normal Goto path (lightweight polling).
-    if(!Goto(parkRA, parkDEC))
-    {
-        LOG_ERROR("Park: failed to start slew to park position");
+    if(!SendCommand(cmd))
         return false;
-    }
 
-    // Goto() set SCOPE_SLEWING and reset the completion detector. Flag this as a
-    // park so GetMountParamsLight() locks the mount (':hP8#') once it arrives.
-    m_ParkingRequested = true;
-    TrackState = SCOPE_PARKING;
     ParkSP.setState(IPS_BUSY);
+    TrackState = SCOPE_PARKING;
+    // The firmware performs any slew and the lock itself. Reset the lightweight
+    // poll detector so completion (mount stopped + $hP=2) transitions to PARKED.
+    m_HaveLastPos = false;
+    m_StableCount = 0;
     return true;
 }
 // -----------------------------------------------------------------------------
 bool TitanTCS::UnPark()
 {
     LOG_INFO("Unparking ...");
-
-    // Cancel any pending park-lock (in case unpark is issued mid-park-slew).
-    m_ParkingRequested = false;
 
     if(SendCommand(":hP0#"))
     {
@@ -1668,27 +1615,25 @@ bool TitanTCS::SetParkPosition(double Axis1Value, double Axis2Value)
 // Park data type is PARK_HA_DEC → Axis1 = Hour Angle, Axis2 = DEC.
 bool TitanTCS::SetCurrentPark()
 {
+    // Save the current mount position as the firmware's park point using ':hS#'
+    // (the same command the TitanTCS controller and ASCOM driver use — the
+    // controller beeps and shows "Park point saved"). The firmware stores the
+    // true mechanical position, which is then reached by ':hP1#' on park. This is
+    // far more reliable than storing sky coordinates, which are degenerate at the
+    // pole where this mount homes.
+    if(!SendCommand(":hS#"))
+    {
+        LOG_ERROR("SetCurrentPark: failed to send save-park command (:hS#)");
+        return false;
+    }
+    LOG_INFO("Saved current position as the mount's park point (:hS#).");
+
+    // Keep INDI's park-position fields in sync for display only (not used for the
+    // actual firmware park, which uses the mount's own stored point).
     double lst = get_local_sidereal_time(LocationNP[LOCATION_LONGITUDE].getValue());
     double ha  = get_local_hour_angle(lst, info.ra);
-
-    // Near the pole the RA/HA coordinate is ill-conditioned: a large hour angle
-    // barely changes the sky position but corresponds to a completely different
-    // MECHANICAL orientation. Replaying such an HA on a later park can send the
-    // mount to the opposite side of the pier (observed: saddle face down).
-    // This mount homes at the pole, where HA 0 is the counterweight-down home
-    // orientation, so clamp HA to 0 in that region.
-    if(fabs(info.dec) > POLE_PARK_DEC_LIMIT)
-    {
-        LOGF_WARN("Park position is near the pole (DEC %.4f). Hour angle is ambiguous "
-                  "there, so storing HA 0 (home orientation) instead of HA %.4f to avoid "
-                  "parking on the wrong side of the pier.", info.dec, ha);
-        ha = 0.0;
-    }
-
     SetAxis1Park(ha);
     SetAxis2Park(info.dec);
-
-    LOGF_INFO("Current park position saved: HA %.4f h, DEC %.4f deg", ha, info.dec);
     return true;
 }
 // -----------------------------------------------------------------------------

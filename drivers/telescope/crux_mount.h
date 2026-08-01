@@ -52,9 +52,7 @@ class TitanTCS : public INDI::Telescope, public INDI::GuiderInterface
         double m_LastDEC {0};
         bool   m_HaveLastPos {false};
         int    m_StableCount {0};
-        // Set when Park() slews to the park position; triggers the firmware
-        // park-lock (':hP8#') once the mount arrives.
-        bool   m_ParkingRequested {false};
+
 
     public:
         virtual const char *getDefaultName() override;
@@ -79,13 +77,11 @@ class TitanTCS : public INDI::Telescope, public INDI::GuiderInterface
         int GuideWETID { -1 };
 
         // How Park() should behave. Mirrors the two options the TitanTCS ASCOM
-        // application offers. The serial ':hP8#' command always parks the mount
-        // in place, so reaching a saved position requires the driver to slew
-        // there first.
+        // application offers, using the mount's own firmware park commands.
         enum
         {
-            PARK_MODE_AT_CURRENT = 0,  // ':hP8#' only — lock wherever it points
-            PARK_MODE_AT_SAVED         // slew to the park position, then lock
+            PARK_MODE_AT_CURRENT = 0,  // ':hP8#' — lock wherever it points
+            PARK_MODE_AT_SAVED         // ':hP1#' — move to saved point, then park
         };
         INDI::PropertySwitch ParkModeSP {2};
 
