@@ -42,3 +42,12 @@ TARGET_LINK_LIBRARIES(test_telescope_simulator
     ${CMAKE_THREAD_LIBS_INIT}
 )
 ADD_TEST(test_telescope_simulator test_telescope_simulator)
+ADD_EXECUTABLE(test_telescope_park
+    test_telescope_park.cpp
+)
+TARGET_LINK_LIBRARIES(test_telescope_park
+    indidriver
+    ${GTEST_BOTH_LIBRARIES}
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+ADD_TEST(test_telescope_park test_telescope_park)
