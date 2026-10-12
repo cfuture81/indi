@@ -1041,7 +1041,11 @@ bool Telescope::ISNewSwitch(const char *dev, const char *name, ISState *states, 
             {
                 ParkSP.reset();
                 ParkSP.setState(IPS_ALERT);
-                Abort();
+                // Same as TELESCOPE_ABORT_MOTION: fall back to the state from before the park request. Otherwise a
+                // driver whose Abort() leaves TrackState alone stays in SCOPE_PARKING and may report the mount as
+                // parked wherever it stopped.
+                if (Abort() && TrackState == SCOPE_PARKING)
+                    TrackState = RememberTrackState;
                 LOG_INFO("Parking/Unparking aborted.");
                 ParkSP.apply();
                 return true;
