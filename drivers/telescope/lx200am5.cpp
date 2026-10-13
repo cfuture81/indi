@@ -913,7 +913,12 @@ bool LX200AM5::Park()
     if (hasCustomParkPosition() && CustomParkSP[0].getState() == ISS_ON)
         rc = parkToMountPosition();
     else
+    {
+        startHomePark();
         rc = park();
+        if (!rc)
+            m_ParkStage = ParkStage::None;
+    }
 
     if (rc)
         TrackState = SCOPE_PARKING;
@@ -1060,6 +1065,17 @@ bool LX200AM5::parkToMountPosition()
 }
 
 /////////////////////////////////////////////////////////////////////////////
+/// The default park is a home slew (:hC#). It is finished only once the mount
+/// reports home (see updateMountPark): :GU# reports N before the slew starts.
+/////////////////////////////////////////////////////////////////////////////
+void LX200AM5::startHomePark()
+{
+    m_ParkMoved = false;
+    m_ParkDeadline = std::chrono::steady_clock::now() + PARK_START_TIMEOUT;
+    m_ParkStage = ParkStage::HomePark;
+}
+
+/////////////////////////////////////////////////////////////////////////////
 /// :Gps# 0: not parked, 1: parking, 2: parked, 3: park error
 /////////////////////////////////////////////////////////////////////////////
 bool LX200AM5::getMountParkState(char &state)
@@ -1094,6 +1110,7 @@ void LX200AM5::checkMountParkState()
         TrackState = SCOPE_PARKING;
         m_ParkStage = ParkStage::Parking;
         m_ParkMoved = true;
+        m_ParkDeadline = std::chrono::steady_clock::now() + PARK_START_TIMEOUT;
         ParkSP.setState(IPS_BUSY);
         ParkSP.apply();
     }
@@ -1105,17 +1122,30 @@ void LX200AM5::checkMountParkState()
 void LX200AM5::updateMountPark(bool slewComplete, bool isHome)
 {
     const bool slewing = !slewComplete;
-    const bool timedOut = std::chrono::steady_clock::now() > m_ParkDeadline;
+    const auto now = std::chrono::steady_clock::now();
 
-    if (m_ParkStage == ParkStage::Homing)
+    // While the mount moves, the deadline stays ahead: it expires only when the mount never started moving
+    // or has stopped without reaching the goal of the stage.
+    if (slewing)
     {
-        if (slewing)
-            m_ParkMoved = true;
+        m_ParkMoved = true;
+        m_ParkDeadline = now + PARK_START_TIMEOUT;
+    }
+    const bool timedOut = now > m_ParkDeadline;
 
+    if (m_ParkStage == ParkStage::Homing || m_ParkStage == ParkStage::HomePark)
+    {
         // Older firmware does not report H at the end of the home slew, so wait for the mount to stop instead.
         bool homeReached = isHome && (m_FirmwareVersion >= FIRMWARE_HOME_FLAG || slewComplete);
         if (homeReached || (m_FirmwareVersion < FIRMWARE_HOME_FLAG && m_ParkMoved && slewComplete))
         {
+            if (m_ParkStage == ParkStage::HomePark)
+            {
+                m_ParkStage = ParkStage::None;
+                SetParked(true);
+                return;
+            }
+
             LOG_INFO("Arrived at home. Parking to the mount park position...");
             m_ParkStage = ParkStage::Parking;
             m_ParkMoved = false;
@@ -1123,8 +1153,8 @@ void LX200AM5::updateMountPark(bool slewComplete, bool isHome)
             if (!sendCommand(":hP#"))
                 failMountPark("failed to send park command");
         }
-        else if (!m_ParkMoved && timedOut)
-            failMountPark("mount did not start moving home");
+        else if (timedOut)
+            failMountPark(m_ParkMoved ? "mount stopped before reaching home" : "mount did not start moving home");
 
         return;
     }
@@ -1143,13 +1173,13 @@ void LX200AM5::updateMountPark(bool slewComplete, bool isHome)
 
         case '1':
             m_ParkMoved = true;
+            m_ParkDeadline = now + PARK_START_TIMEOUT;
             break;
 
         case '0':
-            if (slewing)
-                m_ParkMoved = true;
-            else if (!m_ParkMoved && timedOut)
-                failMountPark("mount did not start moving to the park position");
+            if (timedOut)
+                failMountPark(m_ParkMoved ? "mount stopped before reaching the park position" :
+                              "mount did not start moving to the park position");
             break;
 
         default:
@@ -1207,10 +1237,10 @@ bool LX200AM5::ReadScopeStatus()
     }
     else if (TrackState == SCOPE_PARKING)
     {
-        if (m_ParkStage != ParkStage::None)
-            updateMountPark(slewComplete, isHome);
-        else if (slewComplete)
-            SetParked(true);
+        // Never declare the mount parked from N alone: right after :hC# the mount may not have started moving.
+        if (m_ParkStage == ParkStage::None)
+            startHomePark();
+        updateMountPark(slewComplete, isHome);
     }
     else
     {

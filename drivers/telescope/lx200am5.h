@@ -194,6 +194,7 @@ class LX200AM5 : public LX200Generic
 
         // Mount park position (firmware dependent)
         bool parkToMountPosition();
+        void startHomePark();
         bool getMountParkState(char &state);
         void checkMountParkState();
         void updateMountPark(bool slewComplete, bool isHome);
@@ -260,17 +261,20 @@ class LX200AM5 : public LX200Generic
         static constexpr uint32_t FIRMWARE_CUSTOM_PARK_POSITION {0x010300};
         // :GU# reports H once a home slew is over.
         static constexpr uint32_t FIRMWARE_HOME_FLAG {0x010801};
-        // Give up a park stage that does not start moving within this time.
+        // Give up a park stage that does not start moving within this time, or that stopped this long ago
+        // without reaching its goal.
         static constexpr std::chrono::seconds PARK_START_TIMEOUT {5};
 
         uint32_t m_FirmwareVersion {0};
 
         // A park to the mount park position goes home first (:hC#), then parks (:hP#).
+        // The default park only goes home (:hC#) and is finished there (HomePark).
         enum class ParkStage
         {
             None,
             Homing,
-            Parking
+            Parking,
+            HomePark
         };
         ParkStage m_ParkStage {ParkStage::None};
         bool m_ParkMoved {false};
