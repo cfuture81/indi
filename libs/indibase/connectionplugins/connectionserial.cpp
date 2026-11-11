@@ -46,6 +46,9 @@ struct SerialState
 {
     // Port opened by the last successful Connect(port, baud)
     std::string openedPort;
+    // While an auto search runs, busy and missing ports are expected and only counted
+    bool searching {false};
+    int busyPorts {0};
 };
 
 std::mutex stateMutex;
@@ -252,26 +255,21 @@ bool Serial::Connect()
         // Double search just in case some items were BUSY in the first pass
         systemPorts.insert(systemPorts.end(), doubleSearch.begin(), doubleSearch.end());
 
+        SerialState &search = state(this);
+        search.searching = true;
+        search.busyPorts = 0;
         for (const auto &port : systemPorts)
         {
-            LOGF_INFO("Trying connecting to %s @ %d ...", port.c_str(), baud);
+            LOGF_DEBUG("Trying connecting to %s @ %d ...", port.c_str(), baud);
             if (Connect(port.c_str(), baud) && processHandshake())
             {
+                search.searching = false;
                 PortTP[0].setText(port);
                 PortTP.apply();
 
 #ifdef __linux__
-                // Disable auto-search on Linux if not disabled already
-                if (AutoSearchSP[INDI::DefaultDevice::INDI_ENABLED].getState() == ISS_ON)
-                {
-                    AutoSearchSP[INDI::DefaultDevice::INDI_ENABLED].setState(ISS_OFF);
-                    AutoSearchSP[INDI::DefaultDevice::INDI_DISABLED].setState(ISS_ON);
-                    AutoSearchSP.apply();
-                    m_Device->saveConfig(true, AutoSearchSP.getName());
-                }
-
-                // Save device port under a name that survives a reboot, if different from configuration value
-                // and read-write.
+                // Save the port under a name that survives a reboot. Auto search stays enabled (also in the
+                // configuration), so the device is found again if it is moved to another USB socket.
                 if (m_Permission != IP_RO)
                 {
                     useStablePortName();
@@ -280,6 +278,7 @@ bool Serial::Connect()
                         m_Device->saveConfig(true, INDI::SP::DEVICE_PORT);
                         m_ConfigPort = PortTP[0].getText();
                     }
+                    m_Device->saveConfig(true, AutoSearchSP.getName());
                 }
 #else
                 // Do not overwrite custom ports because it can be actually cause
@@ -302,6 +301,11 @@ bool Serial::Connect()
             // This enables different competing devices to connect
             std::this_thread::sleep_for(std::chrono::milliseconds(500 + (rand() % 1000)));
         }
+        search.searching = false;
+
+        LOGF_WARN("Auto Search: %s was not found on %d port(s) (%d attempt(s) found a port in use by another driver). "
+                  "Check that the device is powered and plugged in.", getDeviceName(),
+                  static_cast<int>(doubleSearch.size() + 1), search.busyPorts);
     }
 
     return false;
@@ -368,21 +372,32 @@ bool Serial::Connect(const char *port, uint32_t baud)
 
     LOGF_DEBUG("Connecting to %s @ %d", port, baud);
 
+    SerialState &connection = state(this);
     if ((connectrc = tty_connect(port, baud, wordSize, parity, stopBits, &PortFD)) != TTY_OK)
     {
+        // During an auto search busy and missing ports are expected, Connect() reports the result once.
         if (connectrc == TTY_PORT_BUSY)
         {
-            LOGF_WARN("Port %s is already used by another driver or process.", port);
+            if (connection.searching)
+            {
+                connection.busyPorts++;
+                LOGF_DEBUG("Port %s is already used by another driver or process.", port);
+            }
+            else
+                LOGF_WARN("Port %s is already used by another driver or process.", port);
             return false;
         }
 
         tty_error_msg(connectrc, errorMsg, MAXRBUF);
-        LOGF_ERROR("Failed to connect to port (%s). Error: %s", port, errorMsg);
+        if (connection.searching)
+            LOGF_DEBUG("Failed to connect to port (%s). Error: %s", port, errorMsg);
+        else
+            LOGF_ERROR("Failed to connect to port (%s). Error: %s", port, errorMsg);
         return false;
     }
 
     LOGF_DEBUG("Port FD %d", PortFD);
-    state(this).openedPort = port;
+    connection.openedPort = port;
 
     return true;
 }
