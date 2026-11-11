@@ -182,6 +182,12 @@ class Serial : public Interface
 
         virtual bool processHandshake();
 
+        // Replace a port name that can change after a reboot (e.g. /dev/ttyUSB0) by a stable one (Linux).
+        void useStablePortName();
+
+        // True if port is one of the detected system ports, or the kernel device node of one of them.
+        bool isSystemPort(const std::string &port) const;
+
         enum
         {
             SERIAL_DEV,
