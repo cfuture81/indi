@@ -229,6 +229,18 @@ TEST(SerialPortNamesTest, listShowsStableNames)
     EXPECT_EQ(SerialPorts::list(fake.root()), expected);
 }
 
+TEST(SerialPortNamesTest, adapterTypeReadsUsbIds)
+{
+    FakeSystem fake;
+    addStellarMate(fake);
+    fake.link("ttyUSB3", fake.dev("ttyUSB_excalibur"));
+
+    EXPECT_EQ(SerialPorts::adapterType(fake.byId(MOUNT_BY_ID), fake.root()), "10c4:ea60");
+    EXPECT_EQ(SerialPorts::adapterType(fake.byPath("3-1.2.1"), fake.root()), "1a86:7523");
+    EXPECT_EQ(SerialPorts::adapterType(fake.dev("ttyUSB_excalibur"), fake.root()), "1a86:7523");
+    EXPECT_EQ(SerialPorts::adapterType(fake.dev("ttyUSB9"), fake.root()), "");
+}
+
 TEST(SerialPortNamesTest, labelShowsProductAndSocket)
 {
     FakeSystem fake;
@@ -236,6 +248,33 @@ TEST(SerialPortNamesTest, labelShowsProductAndSocket)
 
     EXPECT_EQ(SerialPorts::label(fake.byPath("3-1.2.1"), fake.root()), "USB Serial @ USB 3-1.2.1");
     EXPECT_EQ(SerialPorts::label(fake.byId(MOUNT_BY_ID), fake.root()), "");
+}
+
+TEST(SerialPortNamesTest, searchOrderPrefersLikelyPorts)
+{
+    FakeSystem fake;
+    addStellarMate(fake);
+    const std::vector<std::string> ports =
+    {
+        fake.byId(MOUNT_BY_ID), fake.byPath("3-3"), fake.byId(PPBA_BY_ID), fake.byPath("3-1.2.1")
+    };
+    const std::vector<std::string> byPathFirst =
+    {
+        fake.byPath("3-3"), fake.byPath("3-1.2.1"), fake.byId(MOUNT_BY_ID), fake.byId(PPBA_BY_ID)
+    };
+    // Gone by-path port (the device was moved to another USB socket), type unknown: the other by-path ports first.
+    const std::string emptySocket = fake.byPath("3-4");
+    EXPECT_EQ(SerialPorts::searchOrder(ports, emptySocket, "", fake.root()), byPathFirst);
+    // Type known from this session: same type first, even if the saved port is a by-id link.
+    EXPECT_EQ(SerialPorts::searchOrder(ports, fake.byId(MOUNT_BY_ID), "1a86:7523", fake.root()), byPathFirst);
+    // Type of the adapter now at the configured port.
+    const std::vector<std::string> cp2102First =
+    {
+        fake.byId(MOUNT_BY_ID), fake.byPath("3-3"), fake.byId(PPBA_BY_ID), fake.byPath("3-1.2.1")
+    };
+    EXPECT_EQ(SerialPorts::searchOrder(ports, fake.dev("ttyUSB0"), "", fake.root()), cp2102First);
+    // Nothing known (e.g. a custom name that is gone): unchanged.
+    EXPECT_EQ(SerialPorts::searchOrder(ports, fake.dev("ttyUSB_gone"), "", fake.root()), ports);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////

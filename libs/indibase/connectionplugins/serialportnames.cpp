@@ -197,6 +197,11 @@ std::string label(const std::string &port, const std::string &root)
     return adapter.valid ? adapter.product + " @ USB " + adapter.socket : "";
 }
 
+std::string adapterType(const std::string &port, const std::string &root)
+{
+    return usbAdapter(port, root).type;
+}
+
 bool sameDevice(const std::string &a, const std::string &b)
 {
     const std::string target = canonical(a);
@@ -207,6 +212,25 @@ bool isKernelNode(const std::string &port)
 {
     struct stat st;
     return isNodeName(baseName(port)) && lstat(port.c_str(), &st) == 0 && !S_ISLNK(st.st_mode);
+}
+
+std::vector<std::string> searchOrder(const std::vector<std::string> &ports, const std::string &configuredPort,
+                                     const std::string &knownType, const std::string &root)
+{
+    const std::string type = knownType.empty() ? adapterType(configuredPort, root) : knownType;
+    const bool byPath = startsWith(configuredPort, root + BY_PATH);
+    std::vector<std::string> ordered = ports;
+    if (!type.empty())
+        std::stable_partition(ordered.begin(), ordered.end(), [&](const std::string & port)
+    {
+        return adapterType(port, root) == type;
+    });
+    else if (byPath)
+        std::stable_partition(ordered.begin(), ordered.end(), [&](const std::string & port)
+    {
+        return startsWith(port, root + BY_PATH);
+    });
+    return ordered;
 }
 
 #else
@@ -231,6 +255,11 @@ std::string label(const std::string &, const std::string &)
     return "";
 }
 
+std::string adapterType(const std::string &, const std::string &)
+{
+    return "";
+}
+
 bool sameDevice(const std::string &a, const std::string &b)
 {
     return a == b;
@@ -239,6 +268,12 @@ bool sameDevice(const std::string &a, const std::string &b)
 bool isKernelNode(const std::string &)
 {
     return false;
+}
+
+std::vector<std::string> searchOrder(const std::vector<std::string> &ports, const std::string &, const std::string &,
+                                     const std::string &)
+{
+    return ports;
 }
 
 #endif

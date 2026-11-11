@@ -46,6 +46,8 @@ struct SerialState
 {
     // Port opened by the last successful Connect(port, baud)
     std::string openedPort;
+    // USB vendor:product ID of the adapter last talked to, searched first by an auto search
+    std::string adapterType;
     // While an auto search runs, busy and missing ports are expected and only counted
     bool searching {false};
     int busyPorts {0};
@@ -247,6 +249,9 @@ bool Serial::Connect()
         std::minstd_rand g(rd());
         std::shuffle(systemPorts.begin(), systemPorts.end(), g);
 
+        // Look for the same kind of adapter first (see SerialPorts::searchOrder).
+        systemPorts = SerialPorts::searchOrder(systemPorts, PortTP[0].getText(), state(this).adapterType);
+
         std::vector<std::string> doubleSearch = systemPorts;
 
         // Try the current port as LAST port again
@@ -318,7 +323,8 @@ bool Serial::processHandshake()
     if (rc)
     {
         LOGF_INFO("%s is online.", getDeviceName());
-        const SerialState &connection = state(this);
+        SerialState &connection = state(this);
+        connection.adapterType = SerialPorts::adapterType(connection.openedPort);
         // The configured port answered (during an auto search Connect() handles the port it found): store it
         // under a name that survives a reboot.
         if (m_Permission != IP_RO && connection.openedPort == PortTP[0].getText())

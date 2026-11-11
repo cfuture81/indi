@@ -54,11 +54,21 @@ std::string nameToSave(const std::string &port, const std::string &root = "");
 /** Label for a by-path port, e.g. "USB Serial @ USB 3-1.2.1"; empty for any other port. */
 std::string label(const std::string &port, const std::string &root = "");
 
+/** USB vendor and product ID of the adapter behind a port, e.g. "1a86:7523"; empty if unknown. */
+std::string adapterType(const std::string &port, const std::string &root = "");
+
 /** True if both names lead to the same device. */
 bool sameDevice(const std::string &a, const std::string &b);
 
 /** True for a kernel device node like /dev/ttyUSB0 (not a symlink to one). */
 bool isKernelNode(const std::string &port);
 
+/**
+ * Order in which an auto search tries @a ports: ports with the same adapter type first (@a knownType, else the
+ * type of the adapter now at @a configuredPort). If neither is known and @a configuredPort is a by-path link (a
+ * device without a unique serial number), the other by-path ports first. Each group keeps its order.
+ */
+std::vector<std::string> searchOrder(const std::vector<std::string> &ports, const std::string &configuredPort,
+                                     const std::string &knownType, const std::string &root = "");
 }
 }
